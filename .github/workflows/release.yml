@@ -1,0 +1,48 @@
+# Release: on a `v*` tag, re-run tests, build wheel+sdist, attach to a
+# GitHub Release (with generated notes).
+#
+# PyPI publishing is opt-in and uses trusted publishing (no API token):
+#  1. Create the project on pypi.org (or let the first publish create it).
+#  2. Configure a "GitHub Actions" trusted publisher for:
+#     owner=HenryNebula repo=shelp workflow=release.yml environment=(blank)
+#  3. Set repo variable PYPI_PUBLISH=true (Settings → Secrets and variables →
+#     Actions → Variables). The `pypi` job then runs on the next tag.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --dev --frozen
+      - run: uv run pytest -q
+      - run: uv build
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  pypi:
+    if: vars.PYPI_PUBLISH == 'true'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1

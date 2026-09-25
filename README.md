@@ -1,5 +1,7 @@
 # shelp
 
+[![CI](https://github.com/HenryNebula/shelp/actions/workflows/ci.yml/badge.svg)](https://github.com/HenryNebula/shelp/actions/workflows/ci.yml)
+
 `cmd?` → TL;DR. `cmd??` → a full, man-page-grounded cheat sheet. `??` → chat.
 All backed by your choice of model via **OpenRouter** (or any local
 OpenAI-compatible server) — no agent harness, no vendor lock.
@@ -27,6 +29,8 @@ shelp init zsh && exec zsh        # or: shelp init bash && exec bash
 
 For development: clone, `uv sync`, then `uv run shelp …`
 (`.envrc.example` shows optional uv cache/venv relocation).
+Releases: push a `v*` tag — CI builds the wheel and attaches it to a
+GitHub Release; see `.github/workflows/release.yml` to enable PyPI.
 
 Config (environment, all optional except the key with remote providers):
 

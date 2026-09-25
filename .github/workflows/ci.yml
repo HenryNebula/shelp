@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.14"]  # 3.11 = requires-python floor
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install
+        run: uv sync --dev --frozen
+      - name: Tests
+        run: uv run pytest -q
+      - name: CLI smoke
+        run: |
+          uv run shelp --version
+          uv run shelp doctor          # no --live: config check only, no network
+          uv run shelp init zsh
+          grep -q command_not_found_handler ~/.config/shelp/shelp.zsh
