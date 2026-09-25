@@ -1,0 +1,6 @@
+# Optional direnv for uv development.
+# Copy to .envrc and adjust paths if you want uv's cache/virtualenv on a
+# different disk (the repo's .envrc is gitignored). uv works fine without it.
+
+export UV_CACHE_DIR=/path/on/fast/disk/uv-cache
+export UV_PROJECT_ENVIRONMENT=/path/on/fast/disk/venvs/shelp
