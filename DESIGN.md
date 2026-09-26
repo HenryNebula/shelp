@@ -58,71 +58,59 @@ shell completion generation, remote/team sharing of sheets.
 
 ### zsh
 
-`command_not_found_handler` receives the failed command word and its args. A word
-like `unzip??` is never a real command, so the handler is a clean interception
-point — and the failed line `unzip??` stays in history verbatim (↑ + Enter
-re-triggers it, which we want).
+**Two layers, zsh** (`src/shelp/plugin.py`, embedded and written by `shelp init zsh`):
 
-**The glob catch:** `?` is a glob character. With zsh's default `NOMATCH` option,
-`unzip??` dies with `zsh: no matches found: unzip??` *before* the handler runs.
-The plugin must set:
+1. *Primary — an `accept-line` widget.* Intercepts the raw buffer when Enter is
+   pressed, *before* zsh parses the line. Everything after `cmd?`/`cmd??` is
+   passed to `shelp trigger … -- <verbatim text>` as a single argument: globs
+   (`*.log`) stay unexpanded, `|`/`&&`/`;` stay question text, `$HOME` and
+   backticks unevaluated, quotes intact, and words starting with `-` survive
+   (the `--` keeps argparse from eating them). The typed line is pushed to
+   history (`print -s`), the buffer cleared, no command runs. Any pre-existing
+   `accept-line` wrapper (e.g. zsh-autosuggestions) is chained to.
+2. *Fallback — `command_not_found_handler`.* Catches trigger words the widget
+   never saw (e.g. another plugin re-wrapped `accept-line` after this one), and
+   defers non-shelp misses to the distro suggestion helper (Ubuntu/Debian).
 
-```zsh
-unsetopt nomatch   # unmatched globs pass through literally → reach the handler
-```
-
-Side effect (documented in the plugin): unmatched glob patterns are passed to
-commands literally instead of erroring — bash-like behavior. Acceptable default.
-
-The handler (`src/shelp/plugin.py`, embedded and written by `shelp init zsh`):
-
-```zsh
-unsetopt nomatch
-command_not_found_handler() {
-  emulate -L zsh
-  if [[ $1 == *'??' ]]; then
-    local base=${1%%\?\?}
-    shift
-    command shelp trigger "$base" "$@"
-    return
-  fi
-  # not ours → defer to the distro handler (e.g. Ubuntu apt suggestions)
-  if [[ -x /usr/lib/command-not-found ]]; then
-    /usr/lib/command-not-found -- "$1"
-  fi
-  return 127
-}
-```
+The glob catch still applies to the fallback layer: `?` is a glob character,
+and with zsh's default `NOMATCH` option `unzip??` dies with "no matches found"
+*before* the handler runs, so the plugin sets `unsetopt nomatch`. Side effect
+(documented in the plugin): unmatched glob patterns are passed to commands
+literally instead of erroring — bash-like behavior. Acceptable default.
 
 Edge cases:
 
-- A file in cwd literally matching `unzip??` (e.g. `unzipaa`) → glob expands,
-  handler sees `unzipaa`, no `??` suffix → falls through to the distro handler.
-  Rare, fine.
-- Quoted `'unzip??'` works identically (no globbing to worry about).
-- `??` bare → handler sees `$1 == '??'` → general chat.
+- A file in cwd literally matching `unzip??` (e.g. `unzipaa`) → the widget
+  still fires first (it matches the buffer, not the expansion). Only the
+  fallback layer can be confused by this — rare, fine.
+- Quoted `'unzip??'` works identically (the widget sees the raw buffer).
+- `??`/`?` bare → general chat.
+- Multi-line buffers (continuations) fall through to normal execution.
 
 ### bash
 
-Same design via `command_not_found_handle`; bash's default already passes
-unmatched globs literally, so no option change needed. A pre-existing handler
-(e.g. Ubuntu's apt suggestions) is preserved and chained to.
+Same design via `command_not_found_handle` — but without an accept-line hook,
+bash only gets the fallback layer: the question text is whatever bash's parser
+leaves after word splitting/globbing, and words starting with `-` need the `--`
+guard (added). Bash's default already passes unmatched globs literally, so no
+option change needed. A pre-existing handler (e.g. Ubuntu's apt suggestions) is
+preserved and chained to.
 
 ## Architecture
 
 ```
 ┌─ shell ─────────────┐      ┌─ shelp CLI (python) ─────────────────────────┐
 │ unzip?? foo bar     │──────▶ trigger                                      │
-│ command_not_found_  │       │  ├─ harvest: man <cmd>, <cmd> --help,       │
-│ handler             │       │  │    whatis (host-side, deterministic)     │
-└─────────────────────┘       │  ├─ cache: $XDG_CACHE_HOME/shelp/<cmd>.md   │
+│ accept-line widget  │       │  ├─ harvest: man <cmd>, <cmd> --help,       │
+│ (command_not_found_ │       │  │    whatis (host-side, deterministic)     │
+│  handler fallback)  │       │  ├─ cache: $XDG_CACHE_HOME/shelp/<cmd>.md   │
                               │  │    hit + manhash match → render          │
        ┌── c / chat ─────────▶  │  │    miss → generate → cache             │
        │                      │  ├─ render: rich Markdown (+pager) + keys   │
        ▼                      │  └─ chat: own agentic loop (llm.stream)     │
 ┌─ chat loop ─────────┐       └──────────────────────────────────────────────┘
-│ streamed replies,   │                 │ one OpenAI-compatible
-│ one gated `bash`    │◀────────────────┘ transport (llm.py)
+│ streamed markdown   │                 │ one OpenAI-compatible
+│ replies, one gated  │◀────────────────┘ transport (llm.py)
 │ tool, resumable     │
 └─────────────────────┘
 ```

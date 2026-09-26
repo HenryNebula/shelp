@@ -126,8 +126,7 @@ def cmd_show(args) -> int:
         if args.short:
             _hv, body = ensure_short(cmd, refresh=args.refresh)
             if sys.stdout.isatty():
-                render.render_markdown(body)
-                render._console().print(f"[dim]full sheet: {cmd}??[/dim]")
+                render.render_short(body, hint=f"full sheet: {cmd}??")
             else:
                 print(body)
             return 0
@@ -157,13 +156,15 @@ def cmd_trigger(args) -> int:
         if question:
             try:
                 answer = generate.generate_answer(cmd, hv, body, question)
-                print(answer)
+                if sys.stdout.isatty():
+                    render.render_markdown(answer)
+                else:
+                    print(answer)
                 print()
             except generate.GenerateError as e:
                 render.warn(f"could not answer ({e})")
         if sys.stdout.isatty():
-            render.render_markdown(body)
-            render._console().print(f"[dim]full sheet: {cmd}??[/dim]")
+            render.render_short(body, hint=f"full sheet: {cmd}??")
         else:
             print(body)
         return 0

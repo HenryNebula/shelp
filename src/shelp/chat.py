@@ -6,8 +6,8 @@
   stdin isn't interactive).
 - Sessions persist per command under the cache dir and resume on re-entry;
   `--new` starts clean.
-- TUI is deliberately plain: streamed text, dim `→` lines for tool calls,
-  a readline prompt. Ctrl-D or `q` quits.
+- TUI is plain: streamed markdown (rich Live), dim `→` lines for tool
+  calls, a readline prompt. Ctrl-D or `q` quits.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 
-from . import cache, config, llm
+from . import cache, config, llm, render
 
 ROLE = (
     "You are shelp, a shell-command helper living in the user's terminal. "
@@ -125,11 +125,6 @@ def _prompt_user() -> str | None:
     return line
 
 
-def _emit(text: str) -> None:
-    sys.stdout.write(text)
-    sys.stdout.flush()
-
-
 def chat_session(cmd: str | None, question: str | None = None,
                  sheet: str | None = None, new: bool = False) -> None:
     key = cmd or "general"
@@ -150,14 +145,21 @@ def chat_session(cmd: str | None, question: str | None = None,
     while True:
         if awaiting_model:
             print()
+            live = render.LiveSheet()
+            live.start()
             try:
                 text, tool_calls = llm.stream(
                     messages, model=config.chat_model(),
-                    tools=[BASH_TOOL], on_delta=_emit, max_tokens=2048,
+                    tools=[BASH_TOOL], on_delta=live.add_delta,
+                    max_tokens=2048,
                 )
             except llm.LLMError as e:
                 print(f"\nshelp: {e}")
                 break
+            finally:
+                live.stop()
+            if not sys.stdout.isatty() and text:
+                print(text)  # non-tty: streamed deltas were dropped
             print()
             assistant: dict = {"role": "assistant", "content": text}
             if tool_calls:

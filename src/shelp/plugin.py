@@ -13,22 +13,62 @@ ZSH_PLUGIN = r'''# shelp — `cmd?` TL;DR, `cmd??` cheat sheet, `??` chat.
 # "no matches found" before command_not_found_handler can see it.
 unsetopt nomatch
 
+# Intercept trigger lines at accept-line, BEFORE zsh parses the buffer:
+# everything after `cmd?` reaches shelp verbatim — globs (*.log), pipes,
+# quotes and leading-dash words (`ls? -l …`) survive untouched. Without
+# this, the shell would expand/parse the line first and argparse would
+# choke on words that start with `-`.
+_shelp_accept_line() {
+  emulate -L zsh
+  setopt extended_glob
+  local buf base mark rest
+  buf=$BUFFER
+  if [[ $buf == *$'\n'* ]]; then       # multi-line buffer: not ours
+    zle ${_shelp_prev_accept:-.accept-line}
+    return
+  fi
+  buf=${buf##[[:space:]]##}
+  if [[ $buf =~ '^([A-Za-z0-9][A-Za-z0-9_.+@-]*)(\?\?|\?)([[:space:]].*)?$' ]]; then
+    base=$match[1] mark=$match[2] rest=$match[3]
+  elif [[ $buf =~ '^(\?\?|\?)([[:space:]].*)?$' ]]; then   # bare ?? chat
+    base= mark=$match[1] rest=$match[2]
+  else
+    zle ${_shelp_prev_accept:-.accept-line}
+    return
+  fi
+  rest=${rest##[[:space:]]##}
+  print -s -- "$buf"                   # keep the typed line in history
+  BUFFER=
+  local -a opts
+  opts=()
+  [[ $mark == '?' ]] && opts=(--short)
+  command shelp trigger "$base" $opts -- ${rest:+"$rest"}
+  zle .reset-prompt
+}
+
+# Chain to any pre-existing accept-line wrapper (e.g. zsh-autosuggestions).
+typeset -g _shelp_prev_accept=
+_shelp_ol=$(zle -l -L accept-line 2>/dev/null)
+if [[ $_shelp_ol == "zle -N accept-line "* ]]; then
+  typeset -g _shelp_prev_accept=${_shelp_ol##* }
+fi
+zle -N accept-line _shelp_accept_line
+unset _shelp_ol
+
+# Fallback for lines the widget never sees (pasted after a prompt refresh,
+# or when another plugin re-wraps accept-line after this one).
 command_not_found_handler() {
   emulate -L zsh
   local base
   if [[ $1 == *'??' ]]; then
     base=${1%%\?\?}
     shift
-    if [[ -z $base ]]; then
-      command shelp trigger '' "$@"    # bare ?? → general chat
-    else
-      command shelp trigger "$base" "$@"
-    fi
+    command shelp trigger "$base" -- "$@"    # base empty → bare ?? chat
     return
   elif [[ $1 == *'?' ]]; then          # single ? → TL;DR
     base=${1%\?}
     shift
-    command shelp trigger "$base" --short "$@"
+    command shelp trigger "$base" --short -- "$@"
     return
   fi
   # Not ours → defer to the distro suggestion helper (Ubuntu/Debian), same as
@@ -54,17 +94,13 @@ command_not_found_handle() {
     *'??')
       local base="${1%%\?\?}"
       shift
-      if [ -z "$base" ]; then
-        command shelp trigger '' "$@"
-      else
-        command shelp trigger "$base" "$@"
-      fi
+      command shelp trigger "${base:-}" -- "$@"
       return
       ;;
     *'?')
       local base="${1%\?}"
       shift
-      command shelp trigger "$base" --short "$@"
+      command shelp trigger "$base" --short -- "$@"
       return
       ;;
   esac

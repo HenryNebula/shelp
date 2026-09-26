@@ -84,11 +84,15 @@ def _salvage_sheet(text: str) -> str:
 
 
 def complete(system: str, prompt: str, on_delta=None, max_tokens: int = 1400) -> str:
-    text, _calls = llm.stream(
-        [{"role": "system", "content": system},
-         {"role": "user", "content": prompt}],
-        on_delta=on_delta, max_tokens=max_tokens,
-    )
+    try:
+        text, _calls = llm.stream(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": prompt}],
+            on_delta=on_delta, max_tokens=max_tokens,
+        )
+    except llm.LLMError as e:
+        # callers catch GenerateError; llm.LLMError is a sibling class
+        raise GenerateError(str(e)) from e
     if not text.strip():
         raise GenerateError("model returned no text")
     return _strip_fences(text)

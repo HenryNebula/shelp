@@ -96,6 +96,90 @@ def test_front_matter_roundtrip(tmp_path, monkeypatch):
     assert meta4 == {} and body4 == "just text"
 
 
+def test_short_lines_normalization():
+    from shelp.render import short_lines
+
+    # format drift models produce: backticks, bullets, hard-break spaces
+    body = ("`cp` — copy files and directories\n"
+            "\n"
+            "- `cp -r src/ dest/` — recursive copy  \n"
+            "cp -a src dest — preserve attributes\n"
+            "cp -n src dest")
+    tagline, entries = short_lines(body)
+    assert tagline == "cp — copy files and directories"
+    assert entries == [("cp -r src/ dest/", "recursive copy"),
+                       ("cp -a src dest", "preserve attributes"),
+                       ("cp -n src dest", "")]
+
+    # no tagline: first line already an invocation
+    tagline, entries = short_lines("tar -xzf a.tgz — extract gzip tarball")
+    assert tagline is None
+    assert entries == [("tar -xzf a.tgz", "extract gzip tarball")]
+
+
+def test_trigger_parser_dash_words():
+    # the shell plugin sends `--` so questions may start with dashes
+    from shelp.cli import build_parser
+
+    a = build_parser().parse_args(
+        ["trigger", "ls", "--short", "--", "-l", "what", "does", "it", "do"])
+    assert (a.cmd, a.short, a.words) == ("ls", True,
+                                         ["-l", "what", "does", "it", "do"])
+    a = build_parser().parse_args(["trigger", "", "--", "how do I x"])
+    assert (a.cmd, a.short, a.words) == ("", False, ["how do I x"])
+
+
+def test_plugin_dash_guard():
+    from shelp.plugin import BASH_PLUGIN, ZSH_PLUGIN
+
+    # widget intercepts before parsing, handler passes `--` before words
+    assert "zle -N accept-line" in ZSH_PLUGIN
+    assert '-- "$@"' in ZSH_PLUGIN
+    assert '-- "$@"' in BASH_PLUGIN
+
+
+def test_llm_error_wrapped(monkeypatch):
+    from shelp import generate, llm
+
+    def boom(*a, **k):
+        raise llm.LLMError("401 boom")
+    monkeypatch.setattr(generate.llm, "stream", boom)
+    with pytest.raises(generate.GenerateError):
+        generate.complete("s", "p")
+
+
+def test_chat_reply_renders_and_tool_loop(tmp_path, monkeypatch, capsys):
+    import io
+    import json as jsonlib
+
+    monkeypatch.setenv("SHELP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))  # EOF → quit after reply
+    from shelp import cache, chat
+
+    reply = "Use `-d`:\n\n```bash\nunzip a.zip -d out\n```"
+    turns = []
+
+    def fake_stream(messages, **kw):
+        turns.append([m["role"] for m in messages])
+        if len(turns) == 1:  # first: model wants to check the man page
+            return "", [{"id": "c1", "function": {
+                "name": "bash",
+                "arguments": jsonlib.dumps({"command": "man unzip"})}}]
+        return reply, []
+
+    monkeypatch.setattr(chat.llm, "stream", fake_stream)
+    monkeypatch.setattr(chat, "_run_bash", lambda c, f: "exit=0\nok")
+
+    chat.chat_session("unzip", "how to extract elsewhere?", new=True)
+
+    out = capsys.readouterr().out
+    assert "→ man unzip" in out          # tool call shown
+    assert reply in out                  # non-tty fallback prints the reply
+    assert turns[1][-2:] == ["assistant", "tool"]  # tool result fed back
+    msgs = cache.load_chat("unzip")
+    assert msgs[-1]["content"] == reply
+
+
 def test_chat_session_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("SHELP_CACHE_DIR", str(tmp_path))
     from shelp import cache
