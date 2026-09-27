@@ -116,7 +116,8 @@ class Pty:
             return
         raise AssertionError(
             f"timed out after {timeout}s waiting for {marker!r} "
-            f"(x{occurrence}); stream tail: {self.out[-400:]!r}")
+            f"(x{occurrence}); stream head: {self.out[:300]!r} "
+            f"tail: {self.out[-400:]!r}")
 
     def finish(self, timeout: float = 10.0) -> int:
         """Wait for a clean exit, draining the stream while doing so —
