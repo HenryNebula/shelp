@@ -94,7 +94,45 @@ bash only gets the fallback layer: the question text is whatever bash's parser
 leaves after word splitting/globbing, and words starting with `-` need the `--`
 guard (added). Bash's default already passes unmatched globs literally, so no
 option change needed. A pre-existing handler (e.g. Ubuntu's apt suggestions) is
-preserved and chained to.
+preserved and chained to. In **Git Bash**, the handler prefixes
+`MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` so MSYS doesn't rewrite
+POSIX-looking question words (`/etc`) into Windows paths on their way to
+shelp.exe; no-ops under Linux bash. Plugins are written LF-only (CRLF kills
+sourced bash).
+
+### PowerShell (Windows PS 5.1 + PS 7, and pwsh on macOS/Linux)
+
+`shelp init powershell` writes `shelp.ps1` next to `$PROFILE
+.CurrentUserAllHosts` (resolved by asking PowerShell itself — survives
+OneDrive-redirected Documents and the 5.1/7 profile split) and appends a
+dot-source line. The script is 5.1-parseable throughout.
+
+1. *Primary — a PSReadLine Enter key handler.* Same pre-parse interception
+   as zle: `GetBufferState` returns the raw buffer, our regex decides, then
+   `AddToHistory` → `RevertLine` (clear) → invoke shelp → `AcceptLine`
+   (fresh prompt). Bare `??` works even though PS 7 parses `??` as the
+   null-coalescing operator — the line is never parsed. Re-binding is
+   idempotent (PSReadLine replaces handlers; no zsh-style re-source
+   recursion). PSReadLine keeps one handler per key: a pre-existing custom
+   Enter binding is replaced (default Enter is chained to).
+2. *Fallback — `Set-PSReadLineOption -CommandNotFoundHandler`*, gated by
+   probing the parameter (docs claim 2.3.4; the 2.3.5 in PS 7.4.2 lacks
+   it). PS still prints its own error above the sheet — cosmetic.
+
+Two Unix findings (both bit during development, both probed empirically):
+PSReadLine runs key handlers with child stdout/stderr swallowed (fd 2 is a
+capture pipe), and pwsh holds no controlling terminal (`ps -o tty=` → `?`),
+so `/dev/tty` is ENXIO — the zsh widget's reopen trick is unavailable. But
+stdin still points at the terminal, so the Unix branch invokes
+`sh -c "exec >&0 2>&1; exec shelp …"`: dup fd 0 onto stdout/stderr and the
+sheet renders straight to the console. Windows needs none of this — the
+console API passes child output through.
+
+The question travels via the `SHELP_QUESTION` env var, not argv: PS 5.1
+mangles embedded quotes in native-command arguments, env vars don't. All
+plugins stamp `SHELP_SHELL` (zsh/bash/powershell) so chat's tool speaks the
+user's shell; on Windows that means Git Bash where relevant, PowerShell
+otherwise — never cmd.exe (wrong dialect, no man/ls).
 
 ## Architecture
 
@@ -130,10 +168,23 @@ Deliberate split:
 - `man <cmd>` (first ~15k chars, overstrike formatting stripped), `<cmd> --help`
   (first ~5k, stderr combined — many tools print usage there), `whatis <cmd>`.
   Locale pinned (`LC_ALL=C`, `MANWIDTH=110`) for stable hashes + English docs.
+- Windows exes that answer `/?` instead of `--help` (ipconfig, robocopy,
+  netsh) get a third probe (win32 only). `man`/`whatis` just come back empty
+  there — missing docs never raise.
+- Cmdlets (`Get-ChildItem`, Verb-Noun shaped) and dashless aliases (`gci`)
+  are harvested via **one** `pwsh|powershell -NoProfile` spawn:
+  `Get-Command` (which resolves aliases) + `Get-Help -Full`, with
+  `[Console]::OutputEncoding=UTF8` forced — PS 5.1 otherwise emits the OEM
+  codepage and non-ASCII help decodes into mojibake. That spawn is
+  generation-path-only (`harvest(deep=True)`): PS cold start is ~0.5–1s,
+  far over the 0.2s cache-hit budget, so the cheap hash path stays
+  PS-free and cmdlet sheets never auto-regenerate (`r`/`--refresh`;
+  sheets are cached under the *cheap* hash either way).
 - Missing binaries/docs never raise — the sheet is then generated from model
   knowledge with a visible `> generated from model knowledge` banner.
-- Flavor markers ("GNU ", "BusyBox", "bsdtar/libarchive") detected from the text
-  and passed to the prompt, so the sheet can call out flavor differences.
+- Flavor markers ("GNU ", "BusyBox", "bsdtar/libarchive", "powershell")
+  detected from the text and passed to the prompt, so the sheet can call
+  out flavor differences.
 
 ## Generation (`generate.py`)
 
@@ -145,7 +196,7 @@ clause (harvested text is untrusted input). The sheet template asks for
 
 ## Cache (`cache.py`)
 
-`$XDG_CACHE_HOME/shelp/cheatsheets/<cmd>.md` (TL;DRs: `<cmd>.short.md`) with
+`$XDG_CACHE_HOME/shelp/cheatsheets/<cmd>.md` (Windows: `%LOCALAPPDATA%\shelp\cache\…`) (TL;DRs: `<cmd>.short.md`) with
 hand-parsed front-matter:
 
 ```yaml
@@ -166,13 +217,20 @@ alongside as JSON message histories (`chats/<cmd>.json`), resumable per command.
 
 ## Chat loop and safety (`chat.py`)
 
-- Streams replies; one tool: `bash` (output truncated to 4000 chars, 20s timeout).
+- Streams replies; one tool: `shell` — bash on POSIX, and on Windows the
+  shell the plugin stamped (`SHELP_SHELL`): PowerShell by default, Git
+  Bash's bash when that's the session — never cmd.exe (no man/ls, wrong
+  dialect for the safe-list). PS output read as UTF-8 (we force it inside
+  the invocation). Output truncated to 4000 chars, 20s timeout.
 - **Auto-run only plain read-only lookups**: `man/whatis/apropos/which/ls/cat/
-  head/tail/grep/find/stat/file/…` plus the focus command's `--help/-h/
-  --version`. Pipes are fine only when *every* segment is itself safe.
+  head/tail/grep/find/stat/file/…` plus the PowerShell getters
+  (`Get-Help/Get-Command/Get-ChildItem/Select-String/…` and `gci/gc/sls`)
+  plus the focus command's `--help/-h/--version`. Pipes are fine only when
+  *every* segment is itself safe.
 - **Everything else asks `y/N` first** — chaining (`;`, `&&`), redirection,
-  command substitution, unknown commands. In non-interactive contexts (stdin
-  not a tty) non-safe commands are refused outright.
+  command substitution (`$(…)`, backticks), unknown commands. In
+  non-interactive contexts (stdin not a tty) non-safe commands are refused
+  outright.
 - Harvested/tool text is data, never instructions (stated in the system prompt).
 
 ## CLI reference
@@ -183,7 +241,7 @@ shelp trigger <cmd> [words…]                entry point used by the shell hand
 shelp chat [cmd] [question] [--new]         agentic chat
 shelp warm <cmd>…                           pre-generate sheets
 shelp list / prune [--older-than Nd] [--all]
-shelp init zsh|bash                         install the shell handler
+shelp init zsh|bash|powershell              install the shell handler
 shelp doctor [--live]                       config check + optional ping
 ```
 
@@ -208,7 +266,7 @@ shelp/
 │   ├── chat.py             # the agentic loop + bash gating
 │   ├── render.py           # rich Markdown, pager, LiveSheet, key prompt
 │   ├── cache.py            # sheets + chat sessions under the cache root
-│   └── plugin.py           # embedded zsh/bash handlers, `shelp init`
+│   └── plugin.py           # embedded zsh/bash/PowerShell handlers, `shelp init`
 └── tests/                  # cache parsing, command validation, bash gating
 ```
 

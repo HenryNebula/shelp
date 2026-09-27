@@ -40,6 +40,70 @@ def test_chat_bash_gate():
         assert not chat._is_safe(cmd, "tar"), cmd
 
 
+def test_chat_powershell_gate():
+    from shelp import chat
+
+    for cmd in ("Get-Help Get-ChildItem", "Get-ChildItem -Recurse",
+                "gci", "Get-Command Get-Item", "sls pattern file.txt",
+                "Get-ChildItem | Select-String foo"):
+        assert chat._is_safe(cmd, None), cmd
+    # PS-only dangers: statement chaining, redirects, subexpressions
+    for cmd in ("Get-Content a; Remove-Item x", "Get-Process > out.txt",
+                "Get-Content $(Remove-Item x)", "Get-Content a | Remove-Item b",
+                "Get-ChildItem | Remove-Item -Recurse"):
+        assert not chat._is_safe(cmd, None), cmd
+
+
+def test_shell_argv_by_stamp(monkeypatch):
+    from shelp import chat
+
+    monkeypatch.delenv("SHELP_SHELL", raising=False)
+    assert chat._shell_argv() is None                    # POSIX default
+    monkeypatch.setattr(chat.shutil, "which",
+                        lambda n: f"/fake/{n}" if n in ("pwsh", "bash") else None)
+    monkeypatch.setenv("SHELP_SHELL", "powershell")
+    assert chat._shell_argv() == ["/fake/pwsh", "-NoProfile", "-Command"]
+    monkeypatch.setenv("SHELP_SHELL", "bash")
+    assert chat._shell_argv() is None                    # POSIX: shell=True
+    monkeypatch.setattr(chat.sys, "platform", "win32")
+    assert chat._shell_argv() == ["/fake/bash", "-c"]    # Git Bash
+    monkeypatch.delenv("SHELP_SHELL")
+    assert chat._shell_argv() == ["/fake/pwsh", "-NoProfile", "-Command"]
+    # no PS anywhere on win32 and a bash stamp without bash: nothing to do
+    monkeypatch.setattr(chat.shutil, "which", lambda n: "/fake/bash" if n == "bash" else None)
+    monkeypatch.setenv("SHELP_SHELL", "powershell")
+    assert chat._shell_argv() is None
+
+
+def test_trigger_reads_env_question(tmp_path, monkeypatch, capsys):
+    """The PowerShell plugin passes the question via SHELP_QUESTION (PS 5.1
+    mangles embedded quotes in native args); argv words still win."""
+    import os as _os
+
+    import shelp.generate as generate
+    from shelp import cache
+    from shelp.harvest import harvest
+    from shelp.cli import main
+
+    monkeypatch.setenv("SHELP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("SHELL", "dumb")  # not needed, but keeps output plain
+    cache.save("ls", "# ls — list\n", harvest("ls").hash, "stub")
+
+    seen = {}
+
+    def fake_answer(cmd, hv, sheet, question, on_delta=None):
+        seen["q"] = question
+        return "answer"
+
+    monkeypatch.setattr(generate, "generate_answer", fake_answer)
+    monkeypatch.setenv("SHELP_QUESTION", 'list "hidden" files')
+    rc = main(["trigger", "ls"])
+    assert rc == 0 and seen["q"] == 'list "hidden" files'   # quotes intact
+    monkeypatch.setenv("SHELP_QUESTION", "env question")
+    main(["trigger", "ls", "argv", "words"])
+    assert seen["q"] == "argv words"                        # argv wins
+
+
 def test_validate_cmd():
     assert validate_cmd("unzip") == "unzip"
     assert validate_cmd(" python3.11 ") == "python3.11"
@@ -139,12 +203,93 @@ def test_trigger_parser_dash_words():
 
 
 def test_plugin_dash_guard():
-    from shelp.plugin import BASH_PLUGIN, ZSH_PLUGIN
+    from shelp.plugin import BASH_PLUGIN, POWERSHELL_PLUGIN, ZSH_PLUGIN
 
     # widget intercepts before parsing, handler passes `--` before words
     assert "zle -N accept-line" in ZSH_PLUGIN
     assert '-- "$@"' in ZSH_PLUGIN
     assert '-- "$@"' in BASH_PLUGIN
+    # every plugin stamps the session shell for chat's tool executor
+    assert "SHELP_SHELL=zsh" in ZSH_PLUGIN
+    assert "SHELP_SHELL=bash" in BASH_PLUGIN
+    assert "MSYS_NO_PATHCONV=1" in BASH_PLUGIN  # Git Bash path translation
+    assert "Set-PSReadLineKeyHandler -Key Enter" in POWERSHELL_PLUGIN
+    assert "CommandNotFoundHandler" in POWERSHELL_PLUGIN
+    assert "SHELP_QUESTION" in POWERSHELL_PLUGIN   # env, not argv (5.1 quotes)
+
+
+def test_powershell_install_with_profile_override(tmp_path, monkeypatch):
+    from shelp.plugin import POWERSHELL_PLUGIN, install
+
+    profile = tmp_path / "profile.ps1"
+    monkeypatch.setenv("SHELP_PROFILE", str(profile))
+    dest = install("powershell")
+    assert dest.read_text(encoding="utf-8") == POWERSHELL_PLUGIN
+    assert "\r" not in dest.read_text()          # LF-only: CRLF chokes MSYS
+    text = profile.read_text(encoding="utf-8")
+    assert ". '" in text and "shelp.ps1" in text  # dot-source line appended
+    install("powershell")                        # idempotent re-install
+    assert profile.read_text(encoding="utf-8") == text
+
+
+def test_cmdlet_harvest_branch(monkeypatch):
+    import shelp.harvest as H
+
+    assert H.CMDLET_RE.fullmatch("Get-ChildItem")
+    assert H.CMDLET_RE.fullmatch("gci") is None
+    assert H.CMDLET_RE.fullmatch("python3.11") is None
+    assert H.CMDLET_RE.fullmatch("foo-") is None
+
+    monkeypatch.setattr(H, "ps_exe", lambda: "/fake/pwsh")
+
+    def fake_ps(script, timeout=15):
+        assert "Get-Command" in script and "Get-Help" in script
+        return ("whatis: Get-ChildItem [Alias] gci\n"
+                "NAME: Get-ChildItem — gets the items")
+
+    monkeypatch.setattr(H, "_ps_run", fake_ps)
+    deep = H.harvest("Get-ChildItem", deep=True)
+    assert "Get-ChildItem" in deep.man and deep.flavor == "powershell"
+    # cheap path never spawns PS — cmdlet sheets key on a constant hash
+    cheap = H.harvest("Get-ChildItem")
+    assert cheap.man == "" and cheap.empty
+    assert cheap.hash == H.harvest("Get-ChildItem").hash
+    # no PS available → deep degrades to empty, never raises
+    monkeypatch.setattr(H, "ps_exe", lambda: None)
+    assert H.harvest("Get-ChildItem", deep=True).man == ""
+
+
+def test_wants_ps(monkeypatch):
+    import shelp.harvest as H
+
+    monkeypatch.setattr(H, "ps_exe", lambda: None)
+    assert not H.wants_ps("Get-ChildItem")            # no PS → no deep
+    monkeypatch.setattr(H, "ps_exe", lambda: "/fake/pwsh")
+    monkeypatch.setattr(H.shutil, "which", lambda c: None)
+    assert H.wants_ps("Get-ChildItem")                # Verb-Noun always
+    assert H.wants_ps("gci")                          # dashless alias probe
+    hv = H.Harvest(cmd="tar", man="", help_text="", whatis="",
+                   version="", flavor="")
+    assert H.wants_ps("tar", hv)                      # missing locally
+    hv2 = H.Harvest(cmd="tar", man="tar manual", help_text="",
+                    whatis="", version="", flavor="")
+    monkeypatch.setattr(H.shutil, "which", lambda c: "/usr/bin/tar")
+    assert not H.wants_ps("tar", hv2)                 # real cmd with docs
+
+
+def test_cache_root_windows(monkeypatch):
+    import sys as _sys
+
+    from shelp import config
+
+    monkeypatch.delenv("SHELP_CACHE_DIR", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", "/fake/local")
+    monkeypatch.setattr(_sys, "platform", "win32")
+    assert config.cache_root().replace("\\", "/") == "/fake/local/shelp/cache"
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CACHE_HOME", "/fake/xdg")
+    assert config.cache_root() == "/fake/xdg/shelp"
 
 
 def test_llm_error_wrapped(monkeypatch):
@@ -172,12 +317,12 @@ def test_chat_reply_renders_and_tool_loop(tmp_path, monkeypatch, capsys):
         turns.append([m["role"] for m in messages])
         if len(turns) == 1:  # first: model wants to check the man page
             return "", [{"id": "c1", "function": {
-                "name": "bash",
+                "name": "shell",
                 "arguments": jsonlib.dumps({"command": "man unzip"})}}]
         return reply, []
 
     monkeypatch.setattr(chat.llm, "stream", fake_stream)
-    monkeypatch.setattr(chat, "_run_bash", lambda c, f: "exit=0\nok")
+    monkeypatch.setattr(chat, "_run_command", lambda c, f: "exit=0\nok")
 
     chat.chat_session("unzip", "how to extract elsewhere?", new=True)
 

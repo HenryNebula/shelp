@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 
 MAN_LIMIT = 15_000
@@ -26,6 +27,10 @@ ENV = {
 }
 
 CMD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+@-]*")
+
+#: Verb-Noun shaped (`Get-ChildItem`) — a PowerShell cmdlet/alias. Not a
+#: path or flag: the dash sits between letters and nothing else is odd.
+CMDLET_RE = re.compile(r"[A-Za-z]+-[A-Za-z][A-Za-z0-9]*")
 
 
 class InvalidCommand(ValueError):
@@ -63,6 +68,47 @@ def _run(argv: list[str], timeout: float, combine_stderr: bool = False) -> str |
     return out
 
 
+_PS_UTF8 = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+
+
+def ps_exe() -> str | None:
+    """Any available PowerShell — PS7 first (better encoding, faster)."""
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+def _ps_run(script: str, timeout: float = 15) -> str | None:
+    """Run a PowerShell snippet, forcing UTF-8 output: PS 5.1 otherwise
+    emits the OEM codepage and non-ASCII help text decodes into mojibake."""
+    exe = ps_exe()
+    if exe is None:
+        return None
+    return _run([exe, "-NoProfile", "-Command", _PS_UTF8 + script],
+                timeout=timeout, combine_stderr=True)
+
+
+def _harvest_cmdlet(cmd: str) -> tuple[str, str, str]:
+    """(help_text, whatis, flavor) from Get-Help/Get-Command, one PS spawn.
+    Resolves aliases (`gci` → `Get-ChildItem`) so help is found."""
+    script = (
+        "$c = Get-Command " + cmd + " -ErrorAction SilentlyContinue\n"
+        "if (-not $c) { return }\n"
+        "$n = if ($c.CommandType -eq 'Alias') { $c.Definition } else { $c.Name }\n"
+        "Write-Output \"whatis: $n [$($c.CommandType)]\"\n"
+        "Get-Help $n -Full | Out-String -Width 110"
+    )
+    out = (_ps_run(script) or "").strip()
+    if not out:
+        return "", "", ""
+    whatis = ""
+    help_text = out
+    if out.startswith("whatis: "):
+        first, _, rest = out.partition("\n")
+        whatis = first[len("whatis: "):].strip()
+        help_text = rest.strip()
+    flavor = "powershell" if out else ""
+    return help_text, whatis, flavor
+
+
 @dataclass
 class Harvest:
     cmd: str
@@ -95,14 +141,43 @@ class Harvest:
         return "\n\n".join(parts) if parts else "(no local documentation found)"
 
 
-def harvest(cmd: str) -> Harvest:
-    """Gather documentation for *cmd*. Never raises for missing docs."""
+def wants_ps(cmd: str, hv: "Harvest | None" = None) -> bool:
+    """True when a deep harvest could add anything: Verb-Noun names, or
+    dashless aliases (`gci`) of cmdlets — anything man/--help can't cover."""
+    if not ps_exe():
+        return False
+    if CMDLET_RE.fullmatch(cmd):
+        return True
+    if hv is not None:
+        return hv.empty and not shutil.which(cmd)
+    return not shutil.which(cmd)
+
+
+def harvest(cmd: str, deep: bool = False) -> Harvest:
+    """Gather documentation for *cmd*. Never raises for missing docs.
+
+    `deep=True` (generation path only) may spawn PowerShell for cmdlet
+    help. PS cold start is ~0.5-1s — far over the 0.2s cache-hit budget —
+    so the cheap hash path stays PS-free and cmdlet sheets simply never
+    auto-regenerate (use `r` / `--refresh`; `pinned` semantics unchanged).
+    """
     man = _run(["man", cmd], timeout=8) or ""
     man = _strip_overstruck(man).strip()
 
     installed = shutil.which(cmd) is not None
     help_text = ""
     version = ""
+    ps_flavor = ""
+    whatis = ""
+
+    # PowerShell cmdlets (`Get-ChildItem`) and their dashless aliases
+    # (`gci`): man/--help/whatis know nothing about them.
+    if deep and ps_exe() and (CMDLET_RE.fullmatch(cmd)
+                              or (not installed and not man)):
+        ps_help, whatis, ps_flavor = _harvest_cmdlet(cmd)
+        if ps_help:
+            man = ps_help   # Get-Help is the cmdlet man-page analog
+
     if installed:
         # combined streams: many tools print usage to stderr
         help_text = (_run([cmd, "--help"], timeout=6, combine_stderr=True) or "").strip()
@@ -110,15 +185,19 @@ def harvest(cmd: str) -> Harvest:
             alt = (_run([cmd, "-h"], timeout=6, combine_stderr=True) or "").strip()
             if len(alt) > len(help_text):
                 help_text = alt
+        if len(help_text) < 40 and sys.platform == "win32":
+            # native exes answer /?, not --help: ipconfig, robocopy, netsh…
+            alt = (_run([cmd, "/?"], timeout=6, combine_stderr=True) or "").strip()
+            if len(alt) > len(help_text):
+                help_text = alt
         ver = (_run([cmd, "--version"], timeout=6, combine_stderr=True) or "").strip()
         if ver and len(ver) < 200:
             version = ver.splitlines()[0]
 
-    whatis = (_run(["whatis", cmd], timeout=5) or "").strip()
-    if whatis.startswith(cmd):
-        whatis = whatis.splitlines()[0]
-    else:
-        whatis = ""
+    if not whatis:
+        w = (_run(["whatis", cmd], timeout=5) or "").strip()
+        if w.startswith(cmd):
+            whatis = w.splitlines()[0]
 
     blob = man + help_text
     flavor = ""
@@ -138,5 +217,5 @@ def harvest(cmd: str) -> Harvest:
         help_text=help_text[:HELP_LIMIT],
         whatis=whatis,
         version=version,
-        flavor=flavor,
+        flavor=ps_flavor or flavor,
     )

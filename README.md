@@ -27,6 +27,28 @@ export OPENROUTER_API_KEY=sk-or-…
 shelp init zsh && exec zsh        # or: shelp init bash && exec bash
 ```
 
+### PowerShell (Windows; PS 7 recommended, 5.1 supported)
+
+```powershell
+uv tool install C:\path\to\shelp
+shelp init powershell             # writes shelp.ps1 + a line in $PROFILE
+```
+
+Works in Windows Terminal and in pwsh on macOS/Linux. PS 5.1 gets the same
+Enter-handler layer (only the `CommandNotFoundHandler` fallback needs
+PSReadLine ≥ 2.3.6, probed at load). The trigger intercepts the raw buffer
+before PowerShell parses it, so bare `??` works even though PS 7 defines
+`??` as an operator. Question text travels via an env var (PS 5.1 mangles
+quotes in native args), and cmdlet triggers (`Get-ChildItem??`, `gci?`)
+harvest `Get-Help` — via one PowerShell spawn on the generation path only,
+so cache hits stay fast.
+
+Chat's tool speaks **your** shell (the plugin stamps it): PowerShell in PS
+sessions, bash in Git Bash (with `MSYS_NO_PATHCONV=1` so `/etc` in a
+question isn't rewritten to a Windows path), never cmd.exe. Sheets for
+Windows exes that answer `/?` instead of `--help` (ipconfig, robocopy) are
+harvested too.
+
 For development: clone, `uv sync`, then `uv run shelp …`
 (`.envrc.example` shows optional uv cache/venv relocation).
 Releases: push a `v*` tag — CI builds the wheel and attaches it to a
@@ -40,7 +62,7 @@ Config (environment, all optional except the key with remote providers):
 | `SHELP_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | any OpenRouter slug |
 | `SHELP_CHAT_MODEL` | = `SHELP_MODEL` | stronger model for chat if you like |
 | `SHELP_BASE_URL` | `https://openrouter.ai/api/v1` | any OpenAI-compatible endpoint |
-| `SHELP_CACHE_DIR` | `$XDG_CACHE_HOME/shelp` (else `~/.cache/shelp`) | sheets + chat sessions |
+| `SHELP_CACHE_DIR` | `$XDG_CACHE_HOME/shelp` (else `~/.cache/shelp`; Windows: `%LOCALAPPDATA%\shelp\cache`) | sheets + chat sessions |
 | `SHELP_NO_PAGER` | unset | never page long sheets |
 
 The default model is on OpenRouter's free tier (≈20 req/min, 200 req/day —
@@ -56,10 +78,11 @@ Tool calling in chat depends on the local model's support for it.
 
 shelp's own agentic loop — ~150 lines, no framework:
 
-- streams replies; one tool: `bash`
-- read-only lookups (`man`, `--help`, `which`, `ls`, `cat`, `grep`, pipes of
-  those) auto-run; **anything else asks `y/N` first** (chaining, redirection,
-  substitution, or unknown commands)
+- streams replies; one tool: `shell` (bash on POSIX, PowerShell on Windows —
+  the shell the plugin stamped, so a Git Bash session gets bash, never cmd.exe)
+- read-only lookups (`man`, `--help`, `Get-Help`, `Get-ChildItem`, `which`,
+  `ls`, `cat`, `grep`, pipes of those) auto-run; **anything else asks `y/N`
+  first** (chaining, redirection, substitution, or unknown commands)
 - sessions persist per command under the cache dir and **resume** on re-entry;
   `shelp chat <cmd> --new` starts clean; `q`/Ctrl-D exits
 
