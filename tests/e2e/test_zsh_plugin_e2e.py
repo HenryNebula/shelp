@@ -65,7 +65,7 @@ def test_zsh_widget_cached_sheet_round_trip(tmp_path, monkeypatch):
     venv_bin = str(Path(sys.executable).parent)      # provides `shelp`
     # ctty=True: the widget reopens /dev/tty for shelp's stdin — that only
     # works if zsh actually owns a controlling terminal.
-    with Pty(["zsh", "-i"], ctty=True,
+    with Pty(["zsh", "-d", "-i"], ctty=True,
              env={"PATH": venv_bin + os.pathsep + os.environ["PATH"]}) as p:
         p.wait_for(PROMPT_MARK)
         p.send(b"ls??\r")                            # type, Enter → widget
@@ -103,7 +103,7 @@ def test_zsh_widget_cached_sheet_into_chat(tmp_path, monkeypatch):
     venv_bin = str(Path(sys.executable).parent)
     env = {"PATH": venv_bin + os.pathsep + os.environ["PATH"]}
     env.update(_fake_env(tmp_path))
-    with Pty(["zsh", "-i"], ctty=True, env=env) as p:
+    with Pty(["zsh", "-d", "-i"], ctty=True, env=env) as p:
         p.wait_for(PROMPT_MARK)
         p.send(b"ls??\r")
         p.wait_for(CRQ)
@@ -137,7 +137,7 @@ def test_zsh_plugin_survives_resourcing(tmp_path, monkeypatch):
     rc.write_text(rc.read_text() + "\nPROMPT='SHLP-E2E> '\n")
 
     venv_bin = str(Path(sys.executable).parent)
-    with Pty(["zsh", "-i"], ctty=True,
+    with Pty(["zsh", "-d", "-i"], ctty=True,
              env={"PATH": venv_bin + os.pathsep + os.environ["PATH"]}) as p:
         p.wait_for(PROMPT_MARK)
         p.send(b"echo one\r")

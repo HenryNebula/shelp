@@ -373,11 +373,29 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def split_dash_guard(argv: list[str]) -> tuple[list[str], list[str]]:
+    """Split argv at the first bare `--` the shell plugin sends as a guard.
+
+    argparse's handling of `--` before a trailing nargs="*" positional is
+    version-dependent (3.11.14 rejects it outright, 3.14 consumes it), so
+    we do it ourselves: left half parses normally, right half is verbatim
+    question words — dashes and all — appended to the subcommand's words.
+    """
+    if "--" in argv:
+        i = argv.index("--")
+        return argv[:i], argv[i + 1:]
+    return argv, []
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and not argv[0].startswith("-") and argv[0] not in SUBCOMMANDS:
         argv.insert(0, "show")
+    argv, tail = split_dash_guard(argv)
     args = build_parser().parse_args(argv)
+    words = getattr(args, "words", None)
+    if tail and words is not None:
+        words.extend(tail)
     try:
         return args.fn(args) or 0
     except KeyboardInterrupt:

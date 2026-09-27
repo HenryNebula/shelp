@@ -118,15 +118,24 @@ def test_short_lines_normalization():
 
 
 def test_trigger_parser_dash_words():
-    # the shell plugin sends `--` so questions may start with dashes
-    from shelp.cli import build_parser
+    # the shell plugin sends `--` so questions may start with dashes; we
+    # split it ourselves (argparse rejects a bare `--` on some versions,
+    # e.g. 3.11.14) and re-attach the words verbatim
+    from shelp.cli import build_parser, split_dash_guard
 
-    a = build_parser().parse_args(
+    argv, tail = split_dash_guard(
         ["trigger", "ls", "--short", "--", "-l", "what", "does", "it", "do"])
+    a = build_parser().parse_args(argv)
+    a.words.extend(tail)
     assert (a.cmd, a.short, a.words) == ("ls", True,
                                          ["-l", "what", "does", "it", "do"])
-    a = build_parser().parse_args(["trigger", "", "--", "how do I x"])
+    argv, tail = split_dash_guard(["trigger", "", "--", "how do I x"])
+    a = build_parser().parse_args(argv)
+    a.words.extend(tail)
     assert (a.cmd, a.short, a.words) == ("", False, ["how do I x"])
+    # without a guard nothing changes
+    argv, tail = split_dash_guard(["trigger", "ls", "what", "is", "-x"])
+    assert tail == [] and argv[-1] == "-x"
 
 
 def test_plugin_dash_guard():
