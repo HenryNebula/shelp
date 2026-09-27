@@ -53,6 +53,26 @@ jobs:
       - name: PowerShell e2e (interactive PSReadLine chain, no LLM)
         run: uv run pytest tests/e2e/test_powershell_plugin_e2e.py -q -ra
 
+  # TEMP debug: why doesn't pwsh load the fake-HOME profile on runners?
+  debug-pwsh-profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --dev --frozen
+      - name: Diagnose
+        run: |
+          env | grep -iE "^(xdg|home|term|lang|lc_)" || echo "(no xdg/term/locale vars)"
+          which pwsh; pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          mkdir -p /tmp/h/.config/powershell
+          printf 'function global:prompt { "DBG> " }\n' > /tmp/h/.config/powershell/profile.ps1
+          HOME=/tmp/h pwsh -NoLogo -Command 'Write-Output "profile path: $($PROFILE.CurrentUserAllHosts)"; Write-Output "exists: $(Test-Path $PROFILE.CurrentUserAllHosts)"; Write-Output "prompt: $((Get-Command prompt).Definition -replace \"`n\",\" | \")"'
+          uv run python -c "import shutil; print('pytest sees pwsh at:', shutil.which('pwsh'))"
+      - name: E2e with head dump
+        run: uv run pytest tests/e2e/test_powershell_plugin_e2e.py::test_pwsh_cached_sheet_round_trip -q 2>&1 | tail -40 || true
+
   # Real Windows: unit tests under win32 + plugin smoke on BOTH editions
   # (Windows PowerShell 5.1 and PowerShell 7), including a real Get-Help
   # harvest — no LLM, seeded cache.
