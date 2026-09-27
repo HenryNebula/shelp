@@ -57,10 +57,11 @@ def test_chat_powershell_gate():
 def test_shell_argv_by_stamp(monkeypatch):
     from shelp import chat
 
-    monkeypatch.delenv("SHELP_SHELL", raising=False)
-    assert chat._shell_argv() is None                    # POSIX default
     monkeypatch.setattr(chat.shutil, "which",
                         lambda n: f"/fake/{n}" if n in ("pwsh", "bash") else None)
+    monkeypatch.delenv("SHELP_SHELL", raising=False)
+    monkeypatch.setattr(chat.sys, "platform", "linux")
+    assert chat._shell_argv() is None                    # POSIX default
     monkeypatch.setenv("SHELP_SHELL", "powershell")
     assert chat._shell_argv() == ["/fake/pwsh", "-NoProfile", "-Command"]
     monkeypatch.setenv("SHELP_SHELL", "bash")
@@ -289,7 +290,8 @@ def test_cache_root_windows(monkeypatch):
     assert config.cache_root().replace("\\", "/") == "/fake/local/shelp/cache"
     monkeypatch.setattr(_sys, "platform", "linux")
     monkeypatch.setenv("XDG_CACHE_HOME", "/fake/xdg")
-    assert config.cache_root() == "/fake/xdg/shelp"
+    # os.path.join flips to backslashes under win32 — normalize either way
+    assert config.cache_root().replace("\\", "/") == "/fake/xdg/shelp"
 
 
 def test_llm_error_wrapped(monkeypatch):
