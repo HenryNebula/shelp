@@ -2,10 +2,10 @@
 # GitHub Release (with generated notes).
 #
 # PyPI publishing is opt-in and uses trusted publishing (no API token):
-#  1. Create the project on pypi.org (or let the first publish create it).
-#  2. Configure a "GitHub Actions" trusted publisher for:
+#  1. On pypi.org, add a *pending* publisher for the project name `shelp-llm`:
 #     owner=HenryNebula repo=shelp workflow=release.yml environment=(blank)
-#  3. Set repo variable PYPI_PUBLISH=true (Settings → Secrets and variables →
+#     (Account settings → Publishing → Add a new pending publisher.)
+#  2. Set repo variable PYPI_PUBLISH=true (Settings → Secrets and variables →
 #     Actions → Variables). The `pypi` job then runs on the next tag.
 name: Release
 

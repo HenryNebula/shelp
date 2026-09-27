@@ -22,15 +22,25 @@ Python 3.11+, plus either an [OpenRouter](https://openrouter.ai/keys) key or
 any OpenAI-compatible endpoint:
 
 ```bash
-uv tool install /path/to/shelp    # or: pipx install /path/to/shelp
+uv tool install shelp-llm         # PyPI dist name; installs the `shelp` command
 export OPENROUTER_API_KEY=sk-or-…
 shelp init zsh && exec zsh        # or: shelp init bash && exec bash
 ```
 
+(`pipx install shelp-llm` works too; `uvx --from shelp-llm shelp jq` tries it
+without installing.) Straight from the repo instead of PyPI:
+
+```bash
+uv tool install git+https://github.com/HenryNebula/shelp
+```
+
+Upgrades: `uv tool upgrade shelp-llm` — or for a git install, re-run its
+install command.
+
 ### PowerShell (Windows; PS 7 recommended, 5.1 supported)
 
 ```powershell
-uv tool install C:\path\to\shelp
+uv tool install shelp-llm
 shelp init powershell             # writes shelp.ps1 + a line in $PROFILE
 ```
 
@@ -50,9 +60,11 @@ Windows exes that answer `/?` instead of `--help` (ipconfig, robocopy) are
 harvested too.
 
 For development: clone, `uv sync`, then `uv run shelp …`
-(`.envrc.example` shows optional uv cache/venv relocation).
-Releases: push a `v*` tag — CI builds the wheel and attaches it to a
-GitHub Release; see `.github/workflows/release.yml` to enable PyPI.
+(`.envrc.example` shows optional uv cache/venv relocation), or
+`uv tool install --editable .` for a live-installed copy.
+Releases: push a `v*` tag — CI builds the wheel, attaches it to a GitHub
+Release, and publishes to PyPI as `shelp-llm`
+(`.github/workflows/release.yml`).
 
 Config (environment, all optional except the key with remote providers):
 
