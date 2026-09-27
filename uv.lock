@@ -442,7 +442,6 @@ wheels = [
 
 [[package]]
 name = "shelp-llm"
-version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "openai" },
