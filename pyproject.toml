@@ -1,6 +1,6 @@
 [project]
 name = "shelp"
-version = "0.2.0"
+version = "0.3.0"
 description = "`cmd??` — instant, man-page-grounded cheat sheets for shell commands, expandable into an agentic chat"
 readme = "README.md"
 license = { text = "MIT" }
