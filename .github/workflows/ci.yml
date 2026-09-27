@@ -74,6 +74,10 @@ jobs:
           uv run python -c "from shelp.plugin import POWERSHELL_PLUGIN as P; import pathlib; pathlib.Path(r'$plugin').write_bytes(P.encode())"
           $env:SHELP_CACHE_DIR = Join-Path $env:RUNNER_TEMP "cache"
           $env:SHELP_NO_PAGER = "1"
+          # the smoke's child shells must find the venv's shelp.exe —
+          # `uv run` only puts it on PATH for its own children
+          $bin = (uv run python -c 'import sys, os; print(os.path.dirname(sys.executable))') | Select-Object -Last 1
+          $env:PATH = "$bin;$env:PATH"
           foreach ($ps in @('powershell', 'pwsh')) {   # 5.1 first: strictest parser
             # Unix renders the sheet to the console; Windows returns it in
             # the pipeline — assert on the combined stream either way.
