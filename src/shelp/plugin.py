@@ -168,7 +168,8 @@ function global:Test-ShelpLine {
 function global:Invoke-ShelpTrigger {
   param([string]$Base, [string]$Rest, [switch]$Short)
   if (-not (Get-Command shelp -ErrorAction SilentlyContinue)) {
-    Write-Host 'shelp: not on PATH — run `shelp doctor`'
+    # plain ASCII: PS 5.1 conhost mojibakes non-ASCII Write-Host strings
+    Write-Host 'shelp: not on PATH - run `shelp doctor`'
     return
   }
   $env:SHELP_SHELL = 'powershell'   # chat's shell tool speaks PowerShell
