@@ -42,7 +42,7 @@ def ensure_sheet(cmd: str, refresh: bool = False, stream: bool = False):
     )
     if not needs:
         return hv, cached[1], False
-    print(f"shelp: generating sheet for {cmd} (first time)…", file=sys.stderr)
+    render.notice(f"generating sheet for {cmd} (first time)…")
     streamed = False
     try:
         if stream and sys.stdout.isatty():
@@ -67,29 +67,31 @@ def ensure_sheet(cmd: str, refresh: bool = False, stream: bool = False):
 
 def _interactive_loop(cmd: str, body: str, already_rendered: bool = False) -> None:
     """Render + c/r/q loop. 'chat' drops into a chat session, then returns."""
-    while True:
-        if not already_rendered:
-            render.render_markdown(body)
-        action = render.key_prompt()
-        if action == "chat":
-            chat.chat_session(cmd, None, sheet=body)
-            return
-        elif action == "regen":
-            hv = harvest(cmd)
-            try:
-                live = render.LiveSheet()
-                live.start()
+    with render.cooked_stdin():   # zle may have left the tty raw
+        while True:
+            if not already_rendered:
+                render.render_markdown(body)
+            action = render.key_prompt()
+            if action == "chat":
+                chat.chat_session(cmd, None, sheet=body)
+                return
+            elif action == "regen":
+                hv = harvest(cmd)
                 try:
-                    body = generate.generate_sheet(cmd, hv, on_delta=live.add_delta)
-                finally:
-                    live.stop()
-                cache.save(cmd, body, hv.hash, config.model(),
-                           version=hv.version, flavor=hv.flavor)
-            except generate.GenerateError as e:
-                render.warn(f"regeneration failed: {e}")
-            already_rendered = True
-        else:
-            return
+                    live = render.LiveSheet()
+                    live.start()
+                    try:
+                        body = generate.generate_sheet(cmd, hv,
+                                                       on_delta=live.add_delta)
+                    finally:
+                        live.stop()
+                    cache.save(cmd, body, hv.hash, config.model(),
+                               version=hv.version, flavor=hv.flavor)
+                except generate.GenerateError as e:
+                    render.warn(f"regeneration failed: {e}")
+                already_rendered = True
+            else:
+                return
 
 
 def ensure_short(cmd: str, refresh: bool = False):
@@ -107,9 +109,9 @@ def ensure_short(cmd: str, refresh: bool = False):
     )
     if not needs:
         return hv, cached[1]
-    print(f"shelp: generating TL;DR for {cmd}…", file=sys.stderr)
     try:
-        body = generate.generate_short(cmd, hv)
+        with render.ephemeral(f"generating TL;DR for {cmd}…"):
+            body = generate.generate_short(cmd, hv)
     except generate.GenerateError as e:
         if cached and not refresh:
             render.warn(f"regeneration failed ({e}) — showing the cached TL;DR")
@@ -142,6 +144,10 @@ def cmd_show(args) -> int:
 
 
 def cmd_trigger(args) -> int:
+    # The zsh widget runs us with the cursor still at the end of the typed
+    # `cmd? …` line; without this, the first rendered line glues onto it.
+    if sys.stdout.isatty():
+        print()
     base = (args.cmd or "").strip()
     if not base:  # bare `??`/`?` → general chat
         chat.chat_session(None, " ".join(args.words).strip() or None)

@@ -22,8 +22,11 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync --dev --frozen
-      - name: Tests
-        run: uv run pytest -q
+      - name: Install zsh  # e2e drives a real zsh (macOS ships it)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Tests  # unit + pty e2e (real CLI and real zsh; LLM stubbed, no network)
+        run: uv run pytest -q -ra
       - name: CLI smoke
         run: |
           uv run shelp --version

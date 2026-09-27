@@ -27,3 +27,6 @@ packages = ["src/shelp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests driving the real CLI (or a real shell) on a pty",
+]

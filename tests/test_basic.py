@@ -193,3 +193,28 @@ def test_chat_session_roundtrip(tmp_path, monkeypatch):
     assert loaded == msgs
     cache.clear_chat("tar")
     assert cache.load_chat("tar") is None
+
+
+def test_chat_llm_failure_reprompts_and_cleans_turn(tmp_path, monkeypatch, capsys):
+    """A failed model call must not kill the chat nor save a reply-less
+    turn — a dangling user message would auto-retry on every re-entry."""
+    import io
+    import sys as _sys
+
+    import shelp.llm as llm
+    from shelp import cache, chat
+
+    monkeypatch.setenv("SHELP_CACHE_DIR", str(tmp_path))
+
+    def boom(*a, **k):
+        raise llm.LLMError("AuthenticationError: Error code: 401")
+
+    monkeypatch.setattr(llm, "stream", boom)
+    monkeypatch.setattr(_sys, "stdin", io.StringIO(""))  # EOF at the prompt
+    chat.chat_session(None, "hi")                        # must not raise
+
+    out = capsys.readouterr().out
+    assert "401" in out                      # failure is reported…
+    assert "bye." in out                     # …and the session still exits cleanly
+    msgs = cache.load_chat("general")
+    assert not msgs or msgs[-1]["role"] != "user"   # no doomed turn saved

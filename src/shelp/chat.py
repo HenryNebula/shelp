@@ -127,6 +127,12 @@ def _prompt_user() -> str | None:
 
 def chat_session(cmd: str | None, question: str | None = None,
                  sheet: str | None = None, new: bool = False) -> None:
+    with render.cooked_stdin():   # the zsh widget leaves the tty in raw mode
+        _chat_session(cmd, question, sheet, new)
+
+
+def _chat_session(cmd: str | None, question: str | None,
+                  sheet: str | None, new: bool) -> None:
     key = cmd or "general"
     messages: list[dict] = [] if new else (cache.load_chat(key) or [])
     fresh = not messages
@@ -154,8 +160,15 @@ def chat_session(cmd: str | None, question: str | None = None,
                     max_tokens=2048,
                 )
             except llm.LLMError as e:
+                # One failed call shouldn't kill (or doom-loop) the chat:
+                # drop the reply-less turn and go back to the prompt.
+                # Otherwise the dangling user message is saved and every
+                # re-entry auto-retries it — chat looks broken forever.
                 print(f"\nshelp: {e}")
-                break
+                if messages[-1]["role"] == "user":
+                    messages.pop()
+                awaiting_model = False
+                continue
             finally:
                 live.stop()
             if not sys.stdout.isatty() and text:

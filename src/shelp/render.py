@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 import sys
 import time
@@ -83,29 +85,52 @@ def render_short(body: str, hint: str | None = None) -> None:
         con.print(Text(hint, style="dim"))
 
 
+def _getchar() -> str:
+    """One keystroke without waiting for Enter (POSIX cbreak).
+
+    rich has no getchar (the old `from rich.getchar import getchar` always
+    hit ImportError and silently degraded the key prompt to line input);
+    termios is all it takes. ISIG stays on, so Ctrl-C still interrupts.
+    """
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        # TCSANOW, not setcbreak's default TCSAFLUSH: FLUSH would discard a
+        # keystroke pressed between the prompt rendering and this switch —
+        # `c` the instant the sheet finishes would vanish, chat would look
+        # dead. TCSANOW keeps pending input readable across the switch.
+        tty.setcbreak(fd, when=termios.TCSANOW)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 def key_prompt() -> str | None:
     """Read one key: 'c' → chat, 'r' → regenerate, anything else → None.
 
-    Returns None when stdin isn't a terminal (pipes, tests).
+    Single keystroke, no Enter needed. Returns None when stdin isn't a
+    terminal (pipes, tests) or the key was q/Enter/Esc.
     """
     if not sys.stdin.isatty():
         return None
     con = _console()
     con.print("[dim]c) chat · r) regenerate · q) quit[/dim]", end=" ")
     try:
-        from rich.getchar import getchar
         while True:
-            k = getchar()
+            k = _getchar()
             if k in ("c", "C"):
                 con.print()
                 return "chat"
             if k in ("r", "R"):
                 con.print()
                 return "regen"
-            if k in ("q", "Q", "\r", "\n", "\x03", "\x04", "\x1b"):
+            if k in ("q", "Q", "\r", "\n", "\x03", "\x04", "\x1b") or not k:
                 con.print()
                 return None
-    except ImportError:
+    except Exception:  # noqa: BLE001 — no termios / odd fd → line input
         pass
     # fallback: line-based input
     try:
@@ -121,6 +146,70 @@ def key_prompt() -> str | None:
 
 def warn(msg: str) -> None:
     _console().print(f"[yellow]shelp:[/yellow] {msg}")
+
+
+def _stderr_is_ansi() -> bool:
+    return sys.stderr.isatty() and os.environ.get("TERM", "") not in ("", "dumb")
+
+
+@contextlib.contextmanager
+def cooked_stdin():
+    """Ensure stdin is in canonical+echo mode while the block runs.
+
+    The zsh widget runs us with stdin on the real terminal but zle has left
+    it in raw mode: input() would neither echo nor see Enter (raw passes
+    \\r, and only ICRNL makes it a newline). Restore zle's modes on exit —
+    it reasserts them anyway on the next prompt, but leave things as found.
+    No-op when stdin isn't a tty or is already cooked.
+    """
+    try:
+        import termios
+
+        fd = sys.stdin.fileno()
+        attrs = termios.tcgetattr(fd)
+    except Exception:  # noqa: BLE001 — not a tty / no termios
+        yield
+        return
+    lflag = attrs[3]
+    if lflag & termios.ICANON and lflag & termios.ECHO:
+        yield
+        return
+    cooked = list(attrs)
+    # INLCR (left on by zle) is poison: it turns our Enter (LF) into CR
+    # *after* ICRNL's translation, so the line never completes — input()
+    # hangs with the keystroke echoed as ^M. Clear it, then make sure CR
+    # and LF both terminate lines like a normal cooked terminal.
+    cooked[0] &= ~(termios.INLCR | termios.IGNCR | termios.ISTRIP)
+    cooked[0] |= termios.ICRNL
+    cooked[3] |= (termios.ICANON | termios.ECHO | termios.ECHOE
+                  | termios.ECHOK | termios.ISIG)
+    termios.tcsetattr(fd, termios.TCSANOW, cooked)
+    try:
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
+
+
+def notice(msg: str) -> None:
+    """stderr status line. Line placement is the caller's business — for the
+    trigger flow, cmd_trigger gets output off the typed query line."""
+    print(f"shelp: {msg}", file=sys.stderr, flush=True)
+
+
+@contextlib.contextmanager
+def ephemeral(msg: str):
+    """notice that erases itself when the block finishes — the user only
+    wanted the answer, and the wait line shouldn't survive into scrollback.
+    Assumes the cursor already sits at column 0 (see cmd_trigger)."""
+    if _stderr_is_ansi():
+        print(f"shelp: {msg}", end="", file=sys.stderr, flush=True)
+        try:
+            yield
+        finally:
+            print("\r\x1b[2K", end="", file=sys.stderr, flush=True)
+    else:
+        print(f"shelp: {msg}", file=sys.stderr, flush=True)
+        yield
 
 
 class LiveSheet:

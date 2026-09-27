@@ -22,9 +22,12 @@ _shelp_accept_line() {
   emulate -L zsh
   setopt extended_glob
   local buf base mark rest
+  local prev=$_shelp_prev_accept
+  # re-sourcing the plugin chains us to ourselves — call the builtin instead
+  [[ $prev == _shelp_accept_line ]] && prev=
   buf=$BUFFER
   if [[ $buf == *$'\n'* ]]; then       # multi-line buffer: not ours
-    zle ${_shelp_prev_accept:-.accept-line}
+    zle ${prev:-.accept-line}
     return
   fi
   buf=${buf##[[:space:]]##}
@@ -33,7 +36,7 @@ _shelp_accept_line() {
   elif [[ $buf =~ '^(\?\?|\?)([[:space:]].*)?$' ]]; then   # bare ?? chat
     base= mark=$match[1] rest=$match[2]
   else
-    zle ${_shelp_prev_accept:-.accept-line}
+    zle ${prev:-.accept-line}
     return
   fi
   rest=${rest##[[:space:]]##}
@@ -42,16 +45,25 @@ _shelp_accept_line() {
   local -a opts
   opts=()
   [[ $mark == '?' ]] && opts=(--short)
-  command shelp trigger "$base" $opts -- ${rest:+"$rest"}
+  # zle redirects widget commands' stdin from /dev/null, which would kill
+  # the c/r/q prompt and chat — give shelp the real terminal when we can.
+  if [[ -r /dev/tty ]]; then
+    command shelp trigger "$base" $opts -- ${rest:+"$rest"} < /dev/tty
+  else
+    command shelp trigger "$base" $opts -- ${rest:+"$rest"}
+  fi
   zle .reset-prompt
 }
 
 # Chain to any pre-existing accept-line wrapper (e.g. zsh-autosuggestions).
+# On re-source the existing binding is OURSELVES — chaining to it would
+# recurse ("No such widget" on every plain command), so skip that.
 typeset -g _shelp_prev_accept=
 _shelp_ol=$(zle -l -L accept-line 2>/dev/null)
 if [[ $_shelp_ol == "zle -N accept-line "* ]]; then
   typeset -g _shelp_prev_accept=${_shelp_ol##* }
 fi
+[[ $_shelp_prev_accept == _shelp_accept_line ]] && typeset -g _shelp_prev_accept=
 zle -N accept-line _shelp_accept_line
 unset _shelp_ol
 
