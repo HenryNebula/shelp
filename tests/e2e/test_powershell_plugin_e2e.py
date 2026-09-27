@@ -48,11 +48,14 @@ def _fake_env(tmp_path: Path) -> dict[str, str]:
 
 def _setup(tmp_path, monkeypatch):
     """Fake HOME + plugin installed into the profile pwsh actually loads
-    ($HOME/.config/powershell/profile.ps1 on Linux), seeded `ls` sheet."""
+    ($HOME/.config/powershell/profile.ps1 on Linux), seeded `ls` sheet.
+    XDG_CONFIG_HOME must be redirected too: pwsh prefers it over
+    $HOME/.config, and CI runners point it at the real home's config."""
     home = tmp_path / "home"
     cache_dir = tmp_path / "cache"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.setenv("SHELP_PROFILE",
                        str(home / ".config" / "powershell" / "profile.ps1"))
     monkeypatch.setenv("SHELP_CACHE_DIR", str(cache_dir))
