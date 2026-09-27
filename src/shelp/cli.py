@@ -8,7 +8,7 @@ import shutil
 import sys
 
 from . import __version__, cache, chat, config, generate, render
-from .harvest import CMD_RE, InvalidCommand, harvest, validate_cmd
+from .harvest import CMD_RE, Harvest, InvalidCommand, harvest, validate_cmd, wants_ps
 from .plugin import install as install_plugin
 
 SUBCOMMANDS = {"show", "trigger", "chat", "warm", "list", "prune", "init", "doctor"}
@@ -27,6 +27,17 @@ def _validate_or_die(cmd: str) -> str:
     raise AssertionError  # unreachable
 
 
+def _harvest_for_generation(cmd: str) -> tuple[Harvest, str]:
+    """(docs-for-the-prompt, cache-key). The key is the CHEAP hash: cmdlet
+    docs come from a PowerShell spawn on the deep path only, and hashing
+    them would mismatch the PS-free fast path forever — a regen loop."""
+    hv = harvest(cmd)
+    key = hv.hash
+    if wants_ps(cmd, hv):
+        hv = harvest(cmd, deep=True)
+    return hv, key
+
+
 def ensure_sheet(cmd: str, refresh: bool = False, stream: bool = False):
     """Return (harvest, body, streamed). body is None only on total failure."""
     hv = harvest(cmd)
@@ -43,6 +54,7 @@ def ensure_sheet(cmd: str, refresh: bool = False, stream: bool = False):
     if not needs:
         return hv, cached[1], False
     render.notice(f"generating sheet for {cmd} (first time)…")
+    hv, key = _harvest_for_generation(cmd)
     streamed = False
     try:
         if stream and sys.stdout.isatty():
@@ -60,7 +72,7 @@ def ensure_sheet(cmd: str, refresh: bool = False, stream: bool = False):
             render.warn(f"regeneration failed ({e}) — showing the cached sheet")
             return hv, cached[1], False
         raise
-    cache.save(cmd, body, hv.hash, config.model(),
+    cache.save(cmd, body, key, config.model(),
                version=hv.version, flavor=hv.flavor)
     return hv, body, streamed
 
@@ -76,7 +88,7 @@ def _interactive_loop(cmd: str, body: str, already_rendered: bool = False) -> No
                 chat.chat_session(cmd, None, sheet=body)
                 return
             elif action == "regen":
-                hv = harvest(cmd)
+                hv, key = _harvest_for_generation(cmd)
                 try:
                     live = render.LiveSheet()
                     live.start()
@@ -85,7 +97,7 @@ def _interactive_loop(cmd: str, body: str, already_rendered: bool = False) -> No
                                                        on_delta=live.add_delta)
                     finally:
                         live.stop()
-                    cache.save(cmd, body, hv.hash, config.model(),
+                    cache.save(cmd, body, key, config.model(),
                                version=hv.version, flavor=hv.flavor)
                 except generate.GenerateError as e:
                     render.warn(f"regeneration failed: {e}")
@@ -109,6 +121,7 @@ def ensure_short(cmd: str, refresh: bool = False):
     )
     if not needs:
         return hv, cached[1]
+    hv, key = _harvest_for_generation(cmd)
     try:
         with render.ephemeral(f"generating TL;DR for {cmd}…"):
             body = generate.generate_short(cmd, hv)
@@ -117,7 +130,7 @@ def ensure_short(cmd: str, refresh: bool = False):
             render.warn(f"regeneration failed ({e}) — showing the cached TL;DR")
             return hv, cached[1]
         raise
-    cache.save(cmd, body, hv.hash, config.model(),
+    cache.save(cmd, body, key, config.model(),
                version=hv.version, flavor=hv.flavor, suffix=".short")
     return hv, body
 
@@ -148,12 +161,15 @@ def cmd_trigger(args) -> int:
     # `cmd? …` line; without this, the first rendered line glues onto it.
     if sys.stdout.isatty():
         print()
+    # The PowerShell plugin passes the question via env var: immune to
+    # PS 5.1's native-arg quote mangling (argv words still win when set).
+    env_q = os.environ.get("SHELP_QUESTION", "").strip() or None
     base = (args.cmd or "").strip()
     if not base:  # bare `??`/`?` → general chat
-        chat.chat_session(None, " ".join(args.words).strip() or None)
+        chat.chat_session(None, " ".join(args.words).strip() or env_q)
         return 0
     cmd = _validate_or_die(base)
-    question = " ".join(args.words).strip() or None
+    question = " ".join(args.words).strip() or env_q
     if args.short:  # `cmd?` — TL;DR, optionally topped by a tight answer
         try:
             hv, body = ensure_short(cmd)
@@ -177,7 +193,7 @@ def cmd_trigger(args) -> int:
     tty = sys.stdout.isatty()
 
     if question:  # answer first, from local docs (+ cached sheet if any)
-        hv = harvest(cmd)
+        hv, _key = _harvest_for_generation(cmd)
         cached = cache.load(cmd)
         try:
             live = render.LiveSheet()
@@ -275,9 +291,12 @@ def cmd_prune(args) -> int:
 
 def cmd_init(args) -> int:
     dest = install_plugin(args.shell)
-    rc = "~/.zshrc" if args.shell == "zsh" else "~/.bashrc"
+    if args.shell == "powershell":
+        reload_hint = ". $PROFILE"
+    else:
+        reload_hint = f"source {'~/.zshrc' if args.shell == 'zsh' else '~/.bashrc'}"
     print()
-    print(f"Done. Start a new shell, or: source {rc}")
+    print(f"Done. Start a new shell, or: {reload_hint}")
     print("Then try:  unzip??   ·   tar?? list a tar.gz   ·   ?? (general chat)")
     if not shutil.which("shelp"):
         print("note: `shelp` is not on PATH outside its project venv — see `shelp doctor`")
@@ -307,6 +326,8 @@ def cmd_doctor(args) -> int:
         table.add_row("api key", "[dim]none (custom base_url — ok if local)[/dim]")
     shelp_path = shutil.which("shelp")
     table.add_row("shelp on PATH", shelp_path or "[yellow]not found[/yellow]")
+    ps = shutil.which("pwsh") or shutil.which("powershell")
+    table.add_row("powershell", ps or "[dim]not found — needed for cmdlet sheets[/dim]")
     con.print(table)
 
     if args.live:
@@ -363,7 +384,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_prune)
 
     sp = sub.add_parser("init", help="install the shell handler")
-    sp.add_argument("shell", choices=["zsh", "bash"])
+    sp.add_argument("shell", choices=["zsh", "bash", "powershell"])
     sp.set_defaults(fn=cmd_init)
 
     sp = sub.add_parser("doctor", help="check install and auth")

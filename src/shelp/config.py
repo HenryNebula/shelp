@@ -6,6 +6,7 @@ Default is OpenRouter; point SHELP_BASE_URL at a local llama-server
 """
 
 import os
+import sys
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 #: free OpenRouter tier (rate-limited); any OpenRouter slug works — free
@@ -34,6 +35,11 @@ def chat_model() -> str:
 def cache_root() -> str:
     if d := os.environ.get("SHELP_CACHE_DIR"):
         return d
+    if sys.platform == "win32":
+        # XDG has no meaning there; %LOCALAPPDATA% is the idiomatic home
+        # (roaming would sync sheets across machines — not wanted)
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "shelp", "cache")
     base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     return os.path.join(base, "shelp")
 

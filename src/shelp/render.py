@@ -91,7 +91,14 @@ def _getchar() -> str:
     rich has no getchar (the old `from rich.getchar import getchar` always
     hit ImportError and silently degraded the key prompt to line input);
     termios is all it takes. ISIG stays on, so Ctrl-C still interrupts.
+    Windows uses msvcrt: getch() returns b'\\x03' for Ctrl-C without
+    raising — key_prompt already treats that byte as quit.
     """
+    if sys.platform == "win32":
+        import msvcrt
+
+        return msvcrt.getch().decode("utf-8", errors="ignore")
+
     import termios
     import tty
 

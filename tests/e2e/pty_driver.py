@@ -15,6 +15,12 @@ Two hard-won rules (each cost real debugging time on 2026-09-27):
   widget's mid-line cursor by writing the query to the master.
 - Reads after child exit raise EIO, and every wait needs a deadline —
   unguarded loops are how harnesses hang forever.
+
+Rule three (2026-09-27 again, PowerShell): PSReadLine sends `\x1b[6n`
+cursor-position queries and stalls until something answers them — a dumb
+pty master never does. `dsr=True` emulates a terminal's side of the
+conversation: every chunk is fed through a pyte screen and each DSR gets a
+position report. zsh/zle never asks, so POSIX tests keep dsr=False.
 """
 
 from __future__ import annotations
@@ -22,18 +28,22 @@ from __future__ import annotations
 import fcntl
 import os
 import pty
+import re
 import select
 import struct
 import subprocess
 import termios
 import time
 
+_DSR = re.compile(rb"\x1b\[6n")
+
 
 class Pty:
     """A child process on a pseudo-terminal, with marker-based waits."""
 
     def __init__(self, argv: list[str], env: dict[str, str] | None = None,
-                 cols: int = 80, rows: int = 24, ctty: bool = False):
+                 cols: int = 80, rows: int = 24, ctty: bool = False,
+                 dsr: bool = False):
         master, slave = pty.openpty()
         # Give rich a real terminal size — openpty defaults to 0x0.
         fcntl.ioctl(slave, termios.TIOCSWINSZ,
@@ -41,6 +51,13 @@ class Pty:
         full_env = dict(os.environ, TERM="xterm-256color")
         if env:
             full_env.update(env)
+        self._dsr = dsr
+        self._vt = None
+        if dsr:
+            import pyte  # dev dependency; POSIX e2e only
+
+            self._vt = pyte.Screen(cols, rows)
+            self._vts = pyte.Stream(self._vt)
         if ctty:
             # A real controlling terminal: needed when testing flows that
             # reopen /dev/tty (the zsh widget's stdin redirect). The child
@@ -63,6 +80,16 @@ class Pty:
         self._master = master
         self.out = b""
 
+    def _ingest(self, chunk: bytes) -> None:
+        """Record output; under dsr, keep the pyte screen fed and answer
+        PSReadLine's cursor queries with the emulated position."""
+        self.out += chunk
+        if self._vt is not None:
+            self._vts.feed(chunk.decode("utf-8", errors="replace"))
+            for _ in _DSR.findall(chunk):
+                reply = f"\x1b[{self._vt.cursor.y + 1};{self._vt.cursor.x + 1}R"
+                os.write(self._master, reply.encode())
+
     def send(self, data: bytes) -> None:
         os.write(self._master, data)
 
@@ -82,7 +109,7 @@ class Pty:
                 if self.proc.poll() is not None:
                     break
                 continue
-            self.out += chunk
+            self._ingest(chunk)
             if self.out.count(marker) >= occurrence:
                 return
         if self.out.count(marker) >= occurrence:
@@ -106,7 +133,7 @@ class Pty:
                     break
                 if not chunk:
                     break
-                self.out += chunk
+                self._ingest(chunk)
                 continue
             if self.proc.poll() is not None:
                 # give stragglers one more beat, then stop

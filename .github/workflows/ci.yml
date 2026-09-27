@@ -33,3 +33,55 @@ jobs:
           uv run shelp doctor          # no --live: config check only, no network
           uv run shelp init zsh
           grep -q command_not_found_handler ~/.config/shelp/shelp.zsh
+
+  # PowerShell plugin e2e: real pwsh on a pty (DSR answered via pyte), real
+  # plugin, seeded cache — same contract as the zsh suite.
+  test-pwsh-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pwsh
+        run: |
+          wget -q "https://packages.microsoft.com/config/ubuntu/$(. /etc/os-release && echo $VERSION_ID)/packages-microsoft-prod.deb"
+          sudo dpkg -i packages-microsoft-prod.deb
+          sudo apt-get update && sudo apt-get install -y powershell
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --dev --frozen
+      - name: PowerShell e2e (interactive PSReadLine chain, no LLM)
+        run: uv run pytest tests/e2e/test_powershell_plugin_e2e.py -q -ra
+
+  # Real Windows: unit tests under win32 + plugin smoke on BOTH editions
+  # (Windows PowerShell 5.1 and PowerShell 7), including a real Get-Help
+  # harvest — no LLM, seeded cache.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --dev --frozen
+      - name: Unit tests (pty e2e auto-skips on win32)
+        run: uv run pytest tests/test_basic.py -q -ra
+      - name: Plugin smoke on PS 5.1 and PS 7
+        shell: pwsh
+        run: |
+          $plugin = Join-Path $env:RUNNER_TEMP "shelp.ps1"
+          uv run python -c "from shelp.plugin import POWERSHELL_PLUGIN as P; import pathlib; pathlib.Path(r'$plugin').write_bytes(P.encode())"
+          $env:SHELP_CACHE_DIR = Join-Path $env:RUNNER_TEMP "cache"
+          $env:SHELP_NO_PAGER = "1"
+          foreach ($ps in @('powershell', 'pwsh')) {   # 5.1 first: strictest parser
+            # Unix renders the sheet to the console; Windows returns it in
+            # the pipeline — assert on the combined stream either way.
+            $log = @(& $ps -NoProfile -File tests/e2e/ps_smoke.ps1 -PluginPath $plugin 2>&1 | ForEach-Object { "$_" })
+            $log | ForEach-Object { Write-Host "  $_" }
+            if ($LASTEXITCODE) { exit 1 }
+            if (-not ($log -match 'long listing')) { Write-Host 'sheet missing from output'; exit 1 }
+            if (-not ($log -match 'smoke OK')) { exit 1 }
+          }
+      - name: Cmdlet harvest (real Get-Help, no LLM)
+        run: uv run python -c "from shelp.harvest import harvest; hv = harvest('Get-ChildItem', deep=True); assert hv.man and 'Get-ChildItem' in hv.man, 'no help harvested'; print('cmdlet harvest OK,', len(hv.man), 'chars')"
