@@ -77,7 +77,7 @@ def _setup(tmp_path, monkeypatch):
 def test_pwsh_cached_sheet_round_trip(tmp_path, monkeypatch):
     env = _setup(tmp_path, monkeypatch)
     with Pty(["pwsh", "-NoLogo"], ctty=True, dsr=True, env=env) as p:
-        p.wait_for(PROMPT_MARK)
+        p.wait_for(PROMPT_MARK, timeout=60)   # cold pwsh start under CI load
         p.send(b"ls??\r")                     # type, Enter → key handler
         p.wait_for(CRQ, timeout=30)           # sheet + key prompt
         p.send(b"q")                          # single-key quit
@@ -97,7 +97,7 @@ def test_pwsh_bare_double_question_into_chat(tmp_path, monkeypatch):
     env = _setup(tmp_path, monkeypatch)
     env.update(_fake_env(tmp_path))
     with Pty(["pwsh", "-NoLogo"], ctty=True, dsr=True, env=env) as p:
-        p.wait_for(PROMPT_MARK)
+        p.wait_for(PROMPT_MARK, timeout=60)   # cold pwsh start under CI load
         p.send(b"?? how do I pipe\r")
         p.wait_for(b"shelp chat", timeout=30)
         p.wait_for(YOU)
@@ -117,7 +117,7 @@ def test_pwsh_plain_commands_survive_resourcing(tmp_path, monkeypatch):
     equivalent of the zsh re-source recursion bug."""
     env = _setup(tmp_path, monkeypatch)
     with Pty(["pwsh", "-NoLogo"], ctty=True, dsr=True, env=env) as p:
-        p.wait_for(PROMPT_MARK)
+        p.wait_for(PROMPT_MARK, timeout=60)   # cold pwsh start under CI load
         p.send(b"echo one\r")
         p.wait_for(b"one")
         p.send(b". $PROFILE\r")               # the re-source repro
