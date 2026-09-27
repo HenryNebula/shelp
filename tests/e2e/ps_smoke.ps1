@@ -11,8 +11,9 @@ param([Parameter(Mandatory = $true)][string]$PluginPath)
 $ErrorActionPreference = 'Stop'
 . $PluginPath
 
-# seed a cached `ls` sheet using shelp's own cache module
-& uv run python -c 'import os; from shelp import cache; from shelp.harvest import harvest; cache.save("ls", "## ls - list directory contents\n- long listing\n", harvest("ls").hash, "stub")'
+# seed a cached `ls` sheet (a file, not python -c: 5.1 mangles embedded
+# quotes in native-command arguments)
+& uv run python tests/e2e/seed_smoke.py
 if ($LASTEXITCODE) { throw "seeding failed" }
 
 $h = Test-ShelpLine 'tar?? extract a tgz'
